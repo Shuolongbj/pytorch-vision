@@ -16,9 +16,16 @@ import warnings
 from . import functional as F
 
 __all__ = ["Compose", "ToTensor", "ToPILImage", "Normalize", "Resize", "Scale", "CenterCrop", "Pad",
-           "Lambda", "RandomCrop", "RandomHorizontalFlip", "RandomVerticalFlip", "RandomResizedCrop",
-           "RandomSizedCrop", "FiveCrop", "TenCrop", "LinearTransformation", "ColorJitter", "RandomRotation",
-           "Grayscale", "RandomGrayscale"]
+           "Lambda", "RandomApply", "RandomChoice", "RandomOrder", "RandomCrop", "RandomHorizontalFlip",
+           "RandomVerticalFlip", "RandomResizedCrop", "RandomSizedCrop", "FiveCrop", "TenCrop", "LinearTransformation",
+           "ColorJitter", "RandomRotation", "RandomAffine", "Grayscale", "RandomGrayscale"]
+
+_pil_interpolation_to_str = {
+    Image.NEAREST: 'PIL.Image.NEAREST',
+    Image.BILINEAR: 'PIL.Image.BILINEAR',
+    Image.BICUBIC: 'PIL.Image.BICUBIC',
+    Image.LANCZOS: 'PIL.Image.LANCZOS',
+}
 
 
 class Compose(object):
@@ -103,11 +110,15 @@ class ToPILImage(object):
         return F.to_pil_image(pic, self.mode)
 
     def __repr__(self):
-        return self.__class__.__name__ + '({0})'.format(self.mode)
+        format_string = self.__class__.__name__ + '('
+        if self.mode is not None:
+            format_string += 'mode={0}'.format(self.mode)
+        format_string += ')'
+        return format_string
 
 
 class Normalize(object):
-    """Normalize an tensor image with mean and standard deviation.
+    """Normalize a tensor image with mean and standard deviation.
     Given mean: ``(M1,...,Mn)`` and std: ``(S1,..,Sn)`` for ``n`` channels, this transform
     will normalize each channel of the input ``torch.*Tensor`` i.e.
     ``input[channel] = (input[channel] - mean[channel]) / std[channel]``
@@ -164,7 +175,8 @@ class Resize(object):
         return F.resize(img, self.size, self.interpolation)
 
     def __repr__(self):
-        return self.__class__.__name__ + '(size={0})'.format(self.size)
+        interpolate_str = _pil_interpolation_to_str[self.interpolation]
+        return self.__class__.__name__ + '(size={0}, interpolation={1})'.format(self.size, interpolate_str)
 
 
 class Scale(Resize):
@@ -240,7 +252,7 @@ class Pad(object):
         return F.pad(img, self.padding, self.fill)
 
     def __repr__(self):
-        return self.__class__.__name__ + '(padding={0})'.format(self.padding)
+        return self.__class__.__name__ + '(padding={0}, fill={1})'.format(self.padding, self.fill)
 
 
 class Lambda(object):
@@ -259,6 +271,77 @@ class Lambda(object):
 
     def __repr__(self):
         return self.__class__.__name__ + '()'
+
+
+class RandomTransforms(object):
+    """Base class for a list of transformations with randomness
+
+    Args:
+        transforms (list or tuple): list of transformations
+    """
+
+    def __init__(self, transforms):
+        assert isinstance(transforms, (list, tuple))
+        self.transforms = transforms
+
+    def __call__(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def __repr__(self):
+        format_string = self.__class__.__name__ + '('
+        for t in self.transforms:
+            format_string += '\n'
+            format_string += '    {0}'.format(t)
+        format_string += '\n)'
+        return format_string
+
+
+class RandomApply(RandomTransforms):
+    """Apply randomly a list of transformations with a given probability
+
+    Args:
+        transforms (list or tuple): list of transformations
+        p (float): probability
+    """
+
+    def __init__(self, transforms, p=0.5):
+        super(RandomApply, self).__init__(transforms)
+        self.p = p
+
+    def __call__(self, img):
+        if self.p < random.random():
+            return img
+        for t in self.transforms:
+            img = t(img)
+        return img
+
+    def __repr__(self):
+        format_string = self.__class__.__name__ + '('
+        format_string += '\n    p={}'.format(self.p)
+        for t in self.transforms:
+            format_string += '\n'
+            format_string += '    {0}'.format(t)
+        format_string += '\n)'
+        return format_string
+
+
+class RandomOrder(RandomTransforms):
+    """Apply a list of transformations in a random order
+    """
+    def __call__(self, img):
+        order = list(range(len(self.transforms)))
+        random.shuffle(order)
+        for i in order:
+            img = self.transforms[i](img)
+        return img
+
+
+class RandomChoice(RandomTransforms):
+    """Apply single transformation randomly picked from a list
+    """
+    def __call__(self, img):
+        t = random.choice(self.transforms)
+        return t(img)
 
 
 class RandomCrop(object):
@@ -317,11 +400,18 @@ class RandomCrop(object):
         return F.crop(img, i, j, h, w)
 
     def __repr__(self):
-        return self.__class__.__name__ + '(size={0})'.format(self.size)
+        return self.__class__.__name__ + '(size={0}, padding={1})'.format(self.size, self.padding)
 
 
 class RandomHorizontalFlip(object):
-    """Horizontally flip the given PIL Image randomly with a probability of 0.5."""
+    """Horizontally flip the given PIL Image randomly with a given probability.
+
+    Args:
+        p (float): probability of the image being flipped. Default value is 0.5
+    """
+
+    def __init__(self, p=0.5):
+        self.p = p
 
     def __call__(self, img):
         """
@@ -331,16 +421,23 @@ class RandomHorizontalFlip(object):
         Returns:
             PIL Image: Randomly flipped image.
         """
-        if random.random() < 0.5:
+        if random.random() < self.p:
             return F.hflip(img)
         return img
 
     def __repr__(self):
-        return self.__class__.__name__ + '()'
+        return self.__class__.__name__ + '(p={})'.format(self.p)
 
 
 class RandomVerticalFlip(object):
-    """Vertically flip the given PIL Image randomly with a probability of 0.5."""
+    """Vertically flip the given PIL Image randomly with a given probability.
+
+    Args:
+        p (float): probability of the image being flipped. Default value is 0.5
+    """
+
+    def __init__(self, p=0.5):
+        self.p = p
 
     def __call__(self, img):
         """
@@ -350,12 +447,12 @@ class RandomVerticalFlip(object):
         Returns:
             PIL Image: Randomly flipped image.
         """
-        if random.random() < 0.5:
+        if random.random() < self.p:
             return F.vflip(img)
         return img
 
     def __repr__(self):
-        return self.__class__.__name__ + '()'
+        return self.__class__.__name__ + '(p={})'.format(self.p)
 
 
 class RandomResizedCrop(object):
@@ -426,7 +523,12 @@ class RandomResizedCrop(object):
         return F.resized_crop(img, i, j, h, w, self.size, self.interpolation)
 
     def __repr__(self):
-        return self.__class__.__name__ + '(size={0})'.format(self.size)
+        interpolate_str = _pil_interpolation_to_str[self.interpolation]
+        format_string = self.__class__.__name__ + '(size={0}'.format(self.size)
+        format_string += ', scale={0}'.format(round(self.scale, 4))
+        format_string += ', ratio={0}'.format(round(self.ratio, 4))
+        format_string += ', interpolation={0})'.format(interpolate_str)
+        return format_string
 
 
 class RandomSizedCrop(RandomResizedCrop):
@@ -518,7 +620,7 @@ class TenCrop(object):
         return F.ten_crop(img, self.size, self.vertical_flip)
 
     def __repr__(self):
-        return self.__class__.__name__ + '(size={0})'.format(self.size)
+        return self.__class__.__name__ + '(size={0}, vertical_flip={1})'.format(self.size, self.vertical_flip)
 
 
 class LinearTransformation(object):
@@ -631,7 +733,12 @@ class ColorJitter(object):
         return transform(img)
 
     def __repr__(self):
-        return self.__class__.__name__ + '()'
+        format_string = self.__class__.__name__ + '('
+        format_string += 'brightness={0}'.format(self.brightness)
+        format_string += ', contrast={0}'.format(self.contrast)
+        format_string += ', saturation={0}'.format(self.saturation)
+        format_string += ', hue={0})'.format(self.hue)
+        return format_string
 
 
 class RandomRotation(object):
@@ -692,7 +799,133 @@ class RandomRotation(object):
         return F.rotate(img, angle, self.resample, self.expand, self.center)
 
     def __repr__(self):
-        return self.__class__.__name__ + '(degrees={0})'.format(self.degrees)
+        format_string = self.__class__.__name__ + '(degrees={0}'.format(self.degrees)
+        format_string += ', resample={0}'.format(self.resample)
+        format_string += ', expand={0}'.format(self.expand)
+        if self.center is not None:
+            format_string += ', center={0}'.format(self.center)
+        format_string += ')'
+        return format_string
+
+
+class RandomAffine(object):
+    """Random affine transformation of the image keeping center invariant
+
+    Args:
+        degrees (sequence or float or int): Range of degrees to select from.
+            If degrees is a number instead of sequence like (min, max), the range of degrees
+            will be (-degrees, +degrees). Set to 0 to desactivate rotations.
+        translate (tuple, optional): tuple of maximum absolute fraction for horizontal
+            and vertical translations. For example translate=(a, b), then horizontal shift
+            is randomly sampled in the range -img_width * a < dx < img_width * a and vertical shift is
+            randomly sampled in the range -img_height * b < dy < img_height * b. Will not translate by default.
+        scale (tuple, optional): scaling factor interval, e.g (a, b), then scale is
+            randomly sampled from the range a <= scale <= b. Will keep original scale by default.
+        shear (sequence or float or int, optional): Range of degrees to select from.
+            If degrees is a number instead of sequence like (min, max), the range of degrees
+            will be (-degrees, +degrees). Will not apply shear by default
+        resample ({PIL.Image.NEAREST, PIL.Image.BILINEAR, PIL.Image.BICUBIC}, optional):
+            An optional resampling filter.
+            See http://pillow.readthedocs.io/en/3.4.x/handbook/concepts.html#filters
+            If omitted, or if the image has mode "1" or "P", it is set to PIL.Image.NEAREST.
+        fillcolor (int): Optional fill color for the area outside the transform in the output image.
+    """
+
+    def __init__(self, degrees, translate=None, scale=None, shear=None, resample=False, fillcolor=0):
+        if isinstance(degrees, numbers.Number):
+            if degrees < 0:
+                raise ValueError("If degrees is a single number, it must be positive.")
+            self.degrees = (-degrees, degrees)
+        else:
+            assert isinstance(degrees, (tuple, list)) and len(degrees) == 2, \
+                "degrees should be a list or tuple and it must be of length 2."
+            self.degrees = degrees
+
+        if translate is not None:
+            assert isinstance(translate, (tuple, list)) and len(translate) == 2, \
+                "translate should be a list or tuple and it must be of length 2."
+            for t in translate:
+                if not (0.0 <= t <= 1.0):
+                    raise ValueError("translation values should be between 0 and 1")
+        self.translate = translate
+
+        if scale is not None:
+            assert isinstance(scale, (tuple, list)) and len(scale) == 2, \
+                "scale should be a list or tuple and it must be of length 2."
+            for s in scale:
+                if s <= 0:
+                    raise ValueError("scale values should be positive")
+        self.scale = scale
+
+        if shear is not None:
+            if isinstance(shear, numbers.Number):
+                if shear < 0:
+                    raise ValueError("If shear is a single number, it must be positive.")
+                self.shear = (-shear, shear)
+            else:
+                assert isinstance(shear, (tuple, list)) and len(shear) == 2, \
+                    "shear should be a list or tuple and it must be of length 2."
+                self.shear = shear
+        else:
+            self.shear = shear
+
+        self.resample = resample
+        self.fillcolor = fillcolor
+
+    @staticmethod
+    def get_params(degrees, translate, scale_ranges, shears, img_size):
+        """Get parameters for affine transformation
+
+        Returns:
+            sequence: params to be passed to the affine transformation
+        """
+        angle = random.uniform(degrees[0], degrees[1])
+        if translate is not None:
+            max_dx = translate[0] * img_size[0]
+            max_dy = translate[1] * img_size[1]
+            translations = (np.round(random.uniform(-max_dx, max_dx)),
+                            np.round(random.uniform(-max_dy, max_dy)))
+        else:
+            translations = (0, 0)
+
+        if scale_ranges is not None:
+            scale = random.uniform(scale_ranges[0], scale_ranges[1])
+        else:
+            scale = 1.0
+
+        if shears is not None:
+            shear = random.uniform(shears[0], shears[1])
+        else:
+            shear = 0.0
+
+        return angle, translations, scale, shear
+
+    def __call__(self, img):
+        """
+            img (PIL Image): Image to be transformed.
+
+        Returns:
+            PIL Image: Affine transformed image.
+        """
+        ret = self.get_params(self.degrees, self.translate, self.scale, self.shear, img.size)
+        return F.affine(img, *ret, resample=self.resample, fillcolor=self.fillcolor)
+
+    def __repr__(self):
+        s = '{name}(degrees={degrees}'
+        if self.translate is not None:
+            s += ', translate={translate}'
+        if self.scale is not None:
+            s += ', scale={scale}'
+        if self.shear is not None:
+            s += ', shear={shear}'
+        if self.resample > 0:
+            s += ', resample={resample}'
+        if self.fillcolor != 0:
+            s += ', fillcolor={fillcolor}'
+        s += ')'
+        d = dict(self.__dict__)
+        d['resample'] = _pil_interpolation_to_str[d['resample']]
+        return s.format(name=self.__class__.__name__, **d)
 
 
 class Grayscale(object):
@@ -722,7 +955,7 @@ class Grayscale(object):
         return F.to_grayscale(img, num_output_channels=self.num_output_channels)
 
     def __repr__(self):
-        return self.__class__.__name__ + '()'
+        return self.__class__.__name__ + '(num_output_channels={0})'.format(self.num_output_channels)
 
 
 class RandomGrayscale(object):
@@ -756,4 +989,4 @@ class RandomGrayscale(object):
         return img
 
     def __repr__(self):
-        return self.__class__.__name__ + '()'
+        return self.__class__.__name__ + '(p={0})'.format(self.p)
